@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Only for Flutter tooling (hot reload / debugging). The release APK
+         does not request INTERNET; the app works fully offline. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
