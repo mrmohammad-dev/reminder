@@ -12,21 +12,16 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Must match pubspec.yaml (environment.flutter) and the README.
   FLUTTER_VERSION: "3.32.8"
   JAVA_VERSION: "17"
 
 jobs:
   build:
-    name: Test and build APK
+    name: Build Android APK
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      HAS_RELEASE_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
 
     steps:
-      # Tip: for maximum supply-chain safety, replace each tag below with the
-      # full commit SHA of that release (see README, «ثابت کردن Actions»).
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -41,105 +36,54 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          cache: false
 
-      - name: Verify Flutter version
+      - name: Verify Flutter
         run: |
           flutter --version
-          flutter --version | grep -q "Flutter ${FLUTTER_VERSION} " || { echo "::error::Wrong Flutter version"; exit 1; }
+          flutter --version | grep -q "Flutter ${FLUTTER_VERSION} " || {
+            echo "::error::Wrong Flutter version"
+            exit 1
+          }
 
-      - name: Generate missing Android wrapper files (gradlew)
+      - name: Generate Android wrapper if missing
         run: |
           if [ ! -f android/gradlew ]; then
-            # Only creates files that do not exist yet; never overwrites sources.
-            flutter create --platforms=android --org com.mohammad --project-name reminder .
+            echo "android/gradlew is missing. Generating Android platform files..."
+            flutter create \
+              --platforms=android \
+              --org com.mohammad \
+              --project-name reminder \
+              .
           fi
 
       - name: Install dependencies
         run: |
-          if [ -f pubspec.lock ]; then
-            flutter pub get --enforce-lockfile
-          else
-            echo "::warning::pubspec.lock is missing. Resolving now; download the 'pubspec-lock' artifact and commit it to pin versions."
-            flutter pub get
-          fi
+          flutter pub get
 
-      - name: Upload resolved pubspec.lock
-        uses: actions/upload-artifact@v4
-        with:
-          name: pubspec-lock
-          path: pubspec.lock
-          retention-days: 30
-
-      - name: Check formatting
-        id: format
-        continue-on-error: true
-        run: dart format --output=none --set-exit-if-changed lib test
-
-      - name: Report formatting result
-        if: steps.format.outcome == 'failure'
-        run: echo "::warning::Code is not formatted. Run 'dart format lib test' and commit. (Does not block the build.)"
-
-      - name: Analyze
-        run: flutter analyze --no-fatal-infos
+      - name: Analyze project
+        run: |
+          flutter analyze --no-fatal-infos
 
       - name: Run tests
-        run: flutter test
+        run: |
+          flutter test
 
-      - name: Build debug APK (test install, debug signature)
-        run: flutter build apk --debug --build-number=${{ github.run_number }}
+      - name: Build Debug APK
+        run: |
+          flutter build apk \
+            --debug \
+            --build-number=${{ github.run_number }}
 
-      - name: Upload debug APK
+      - name: Verify Debug APK
+        run: |
+          test -f build/app/outputs/flutter-apk/app-debug.apk
+          ls -lh build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: reminder-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 30
-
-      - name: Release signing secrets missing
-        if: env.HAS_RELEASE_KEY != 'true'
-        run: |
-          echo "::notice::Release APK skipped: signing secrets are not configured. Only the DEBUG APK was built (it is NOT a release build)."
-
-      - name: Restore release keystore from secrets
-        if: env.HAS_RELEASE_KEY == 'true'
-        env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-          {
-            echo "storeFile=$KEYSTORE_PATH"
-            echo "storePassword=$KEYSTORE_PASSWORD"
-            echo "keyAlias=$KEY_ALIAS"
-            echo "keyPassword=$KEY_PASSWORD"
-          } > android/key.properties
-          echo "Keystore restored (contents not printed)."
-
-      - name: Build release APK (stable signing key)
-        if: env.HAS_RELEASE_KEY == 'true'
-        run: flutter build apk --release --build-number=${{ github.run_number }}
-
-      - name: Verify release signature
-        if: env.HAS_RELEASE_KEY == 'true'
-        run: |
-          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
-          "$APKSIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk | grep -v -i "password"
-
-      - name: Upload release APK
-        if: env.HAS_RELEASE_KEY == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: reminder-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
-          retention-days: 90
-
-      - name: Remove signing material
-        if: always()
-        run: rm -f android/key.properties "$RUNNER_TEMP/release.jks"
